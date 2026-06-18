@@ -1,663 +1,198 @@
 #!/usr/bin/env python3
 """
-Network Diagnostic Web Dashboard - NO AI VERSION
-เหมือนเดิมแต่ไม่ต้องใช้ Anthropic API
-ประหยัด cost และเร็วขึ้น!
+Network Diagnostic Dashboard - Agent Edition
+รันบน Render.com เป็นตัวรับข้อมูล + แสดงผล
+ข้อมูล WiFi/Ping ถูกเก็บจากเครื่อง User ผ่าน agent.ps1 แล้วส่งมาที่ /api/report
 """
 
-from flask import Flask, render_template_string, jsonify
-import subprocess
-import json
-import re
-import socket
-import time
+from flask import Flask, render_template_string, jsonify, request
 from datetime import datetime
 import os
 
 app = Flask(__name__)
 
-# Store diagnostic results
-diagnostic_results = {}
-is_running = False
+# token ต้องตรงกับที่ตั้งใน agent.ps1  (ตั้งค่าได้ที่ Render -> Environment)
+API_TOKEN = os.environ.get("AGENT_TOKEN", "change-me-to-a-secret")
 
-# ===== HTML Template (ไม่มี AI section) =====
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🌐 Network Diagnostic Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-            animation: slideDown 0.5s ease-out;
-        }
-        
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.95;
-        }
-        
-        .control-panel {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-        }
-        
-        .control-panel button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 15px 40px;
-            font-size: 1.1em;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s;
-            font-weight: bold;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        }
-        
-        .control-panel button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
-        }
-        
-        .control-panel button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-            animation: pulse 2s infinite;
-        }
-        
-        .status-indicator.running {
-            background: #4CAF50;
-        }
-        
-        .status-indicator.idle {
-            background: #9E9E9E;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .status-text {
-            font-weight: bold;
-            color: #333;
-            margin-top: 10px;
-        }
-        
-        .dashboard {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            border-left: 5px solid #667eea;
-            transition: all 0.3s;
-            animation: slideUp 0.5s ease-out;
-        }
-        
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
-        }
-        
-        .card.warning {
-            border-left-color: #ff9800;
-            background: #fff8f0;
-        }
-        
-        .card.error {
-            border-left-color: #f44336;
-            background: #ffebee;
-        }
-        
-        .card.success {
-            border-left-color: #4CAF50;
-            background: #f1f8f4;
-        }
-        
-        .card h3 {
-            margin-bottom: 15px;
-            color: #333;
-            font-size: 1.3em;
-        }
-        
-        .card-item {
-            margin: 10px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #eee;
-            padding: 10px 0;
-        }
-        
-        .card-item:last-child {
-            border-bottom: none;
-        }
-        
-        .card-label {
-            font-weight: 600;
-            color: #666;
-        }
-        
-        .card-value {
-            color: #333;
-            font-size: 1.1em;
-            font-weight: 500;
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.9em;
-            font-weight: bold;
-            margin: 5px 0;
-        }
-        
-        .badge.ok {
-            background: #c8e6c9;
-            color: #2e7d32;
-        }
-        
-        .badge.warning {
-            background: #ffe0b2;
-            color: #e65100;
-        }
-        
-        .badge.error {
-            background: #ffcdd2;
-            color: #c62828;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 40px;
-            display: none;
-        }
-        
-        .spinner {
-            border: 5px solid #f3f3f3;
-            border-top: 5px solid #667eea;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .loading-text {
-            color: white;
-            font-size: 1.2em;
-            font-weight: bold;
-        }
-        
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
+# เก็บรายงานล่าสุดของแต่ละเครื่องไว้ในหน่วยความจำ { computer_name: {...} }
+reports = {}
 
-        .info-box {
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 30px;
-            border-left: 5px solid #2196F3;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
 
-        .info-box h3 {
-            color: #2196F3;
-            margin-bottom: 10px;
-        }
+def signal_quality(signal):
+    if signal is None:
+        return "Unknown"
+    if signal >= 80:
+        return "Excellent"
+    if signal >= 60:
+        return "Good"
+    if signal >= 40:
+        return "Fair"
+    return "Poor"
 
-        .info-box p {
-            color: #666;
-            line-height: 1.6;
-        }
-        
-        @media (max-width: 768px) {
-            .dashboard {
-                grid-template-columns: 1fr;
-            }
-            
-            .header h1 {
-                font-size: 1.8em;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🌐 Network Diagnostic Dashboard</h1>
-            <p>ตรวจสอบสภาพ WiFi และเครือข่าย</p>
-        </div>
-        
-        <div class="control-panel">
-            <button id="runBtn" onclick="runDiagnostic()">
-                ▶️ เริ่มการตรวจสอบ
-            </button>
-            <div class="status-text">
-                <span class="status-indicator idle" id="statusIndicator"></span>
-                <span id="statusText">พร้อมสำหรับการตรวจสอบ</span>
-            </div>
-        </div>
-        
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <div class="loading-text">🔍 กำลังตรวจสอบเครือข่าย...</div>
-            <div class="loading-text" style="font-size: 0.9em; margin-top: 10px;">อาจใช้เวลาประมาณ 10-30 วินาที</div>
-        </div>
-        
-        <div id="results"></div>
-    </div>
-    
-    <script>
-        let isRunning = false;
-        
-        async function runDiagnostic() {
-            if (isRunning) return;
-            
-            isRunning = true;
-            document.getElementById('runBtn').disabled = true;
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('results').innerHTML = '';
-            document.getElementById('statusIndicator').className = 'status-indicator running';
-            document.getElementById('statusText').textContent = 'กำลังตรวจสอบเครือข่าย...';
-            
-            try {
-                const response = await fetch('/api/diagnostic', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
-                });
-                
-                const data = await response.json();
-                
-                document.getElementById('loading').style.display = 'none';
-                displayResults(data);
-                
-                document.getElementById('statusIndicator').className = 'status-indicator idle';
-                document.getElementById('statusText').textContent = '✅ ตรวจสอบเสร็จแล้ว';
-                
-            } catch (error) {
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('results').innerHTML = `
-                    <div class="card error">
-                        <h3>❌ เกิดข้อผิดพลาด</h3>
-                        <p>${error.message}</p>
-                    </div>
-                `;
-                document.getElementById('statusIndicator').className = 'status-indicator idle';
-                document.getElementById('statusText').textContent = '❌ เกิดข้อผิดพลาด';
-            } finally {
-                isRunning = false;
-                document.getElementById('runBtn').disabled = false;
-            }
-        }
-        
-        function displayResults(data) {
-            let html = '';
-            
-            // System Info
-            html += `
-                <div class="dashboard">
-                    <div class="card">
-                        <h3>📱 ข้อมูลระบบ</h3>
-                        <div class="card-item">
-                            <span class="card-label">เซิร์ฟเวอร์:</span>
-                            <span class="card-value">${data.system.server_info || 'Cloud'}</span>
-                        </div>
-                        <div class="card-item">
-                            <span class="card-label">เวลา:</span>
-                            <span class="card-value">${data.system.timestamp}</span>
-                        </div>
-                    </div>
-            `;
-            
-            // WiFi Status
-            const wifiCard = data.wifi.ssid ? 'success' : 'warning';
-            html += `
-                    <div class="card ${wifiCard}">
-                        <h3>📶 WiFi Status</h3>
-                        ${data.wifi.ssid ? `
-                            <div class="card-item">
-                                <span class="card-label">SSID:</span>
-                                <span class="card-value">${data.wifi.ssid}</span>
-                            </div>
-                            <div class="card-item">
-                                <span class="card-label">Signal:</span>
-                                <span class="card-value">${data.wifi.signal_strength}%</span>
-                            </div>
-                            <div class="card-item">
-                                <span class="card-label">Quality:</span>
-                                <span class="card-value">
-                                    <span class="badge ${getQualityClass(data.wifi.signal_quality)}">
-                                        ${data.wifi.signal_quality}
-                                    </span>
-                                </span>
-                            </div>
-                        ` : `
-                            <p>❌ ไม่มี WiFi connection</p>
-                        `}
-                    </div>
-            `;
-            
-            // Network Performance
-            const perfCard = data.performance.ping_avg && data.performance.ping_avg < 100 ? 'success' : 'warning';
-            html += `
-                    <div class="card ${perfCard}">
-                        <h3>📊 Network Performance</h3>
-                        ${data.performance.ping_avg ? `
-                            <div class="card-item">
-                                <span class="card-label">Ping (avg):</span>
-                                <span class="card-value">${Math.round(data.performance.ping_avg)} ms</span>
-                            </div>
-                            <div class="card-item">
-                                <span class="card-label">Status:</span>
-                                <span class="card-value">
-                                    <span class="badge ${data.performance.ping_status === 'Normal ✅' ? 'ok' : 'warning'}">
-                                        ${data.performance.ping_status}
-                                    </span>
-                                </span>
-                            </div>
-                        ` : `
-                            <p>⚠️ ไม่สามารถทดสอบได้</p>
-                        `}
-                    </div>
-                </div>
-            `;
-            
-            // DNS Performance
-            html += `
-                <div class="dashboard">
-                    <div class="card ${data.dns.dns_status === 'Normal ✅' ? 'success' : 'warning'}">
-                        <h3>🔎 DNS Performance</h3>
-                        ${data.dns.google_resolution_ms ? `
-                            <div class="card-item">
-                                <span class="card-label">Google.com Resolution:</span>
-                                <span class="card-value">${Math.round(data.dns.google_resolution_ms)} ms</span>
-                            </div>
-                            <div class="card-item">
-                                <span class="card-label">Status:</span>
-                                <span class="card-value">
-                                    <span class="badge ${data.dns.dns_status === 'Normal ✅' ? 'ok' : 'warning'}">
-                                        ${data.dns.dns_status}
-                                    </span>
-                                </span>
-                            </div>
-                        ` : `
-                            <p>⚠️ DNS test failed</p>
-                        `}
-                    </div>
-                    
-                    <div class="card">
-                        <h3>🔗 Network Status</h3>
-                        ${data.connections ? `
-                            <div class="card-item">
-                                <span class="card-label">Established Connections:</span>
-                                <span class="card-value">${data.connections.established_count || 0}</span>
-                            </div>
-                            <div class="card-item">
-                                <span class="card-label">Listening Ports:</span>
-                                <span class="card-value">${data.connections.listening_count || 0}</span>
-                            </div>
-                        ` : `
-                            <p>Network data unavailable</p>
-                        `}
-                    </div>
-            `;
-            
-            // Processes
-            if (data.processes.bandwidth_consuming_apps && data.processes.bandwidth_consuming_apps.length > 0) {
-                html += `
-                    <div class="card warning">
-                        <h3>⚙️ Bandwidth-Consuming Apps</h3>
-                        <p>⚠️ พบแอปพลิเคชันต่อไปนี้:</p>
-                        ${data.processes.bandwidth_consuming_apps.map(app => `
-                            <div class="badge warning">${app}</div>
-                        `).join('')}
-                    </div>
-                `;
-            }
-            
-            html += `</div>`;
 
-            // Information Box
-            html += `
-                <div class="info-box">
-                    <h3>💡 Manual Analysis Required</h3>
-                    <p>
-                        AI analysis is currently disabled to save on API costs. 
-                        Review the data above and check the following:
-                    </p>
-                    <ul style="margin-left: 20px; margin-top: 10px;">
-                        <li><strong>WiFi Signal:</strong> If below 40%, consider moving closer to router or upgrading equipment</li>
-                        <li><strong>Ping Time:</strong> If above 100ms, connection is slow. Check internet provider or network congestion</li>
-                        <li><strong>Bandwidth Apps:</strong> If CCTV/ffmpeg detected, reduce resolution or frame rate</li>
-                        <li><strong>DNS:</strong> If above 500ms, try changing DNS servers (8.8.8.8 or 1.1.1.1)</li>
-                    </ul>
-                </div>
-            `;
-            
-            document.getElementById('results').innerHTML = html;
-        }
-        
-        function getQualityClass(quality) {
-            if (quality === 'Excellent') return 'ok';
-            if (quality === 'Good') return 'ok';
-            if (quality === 'Fair') return 'warning';
-            return 'error';
-        }
-    </script>
-</body>
-</html>
-"""
+# ===================== API: รับข้อมูลจาก Agent =====================
+@app.route('/api/report', methods=['POST'])
+def api_report():
+    data = request.get_json(silent=True) or {}
+    if data.get("token") != API_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
 
-# ===== Routes =====
+    computer = (data.get("computer") or "unknown").strip()
+    reports[computer] = {
+        "computer": computer,
+        "ssid": data.get("ssid"),
+        "signal": data.get("signal"),
+        "signal_quality": signal_quality(data.get("signal")),
+        "ping_avg": data.get("ping_avg"),
+        "timestamp": data.get("timestamp"),
+        "received": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return jsonify({"status": "ok"})
+
+
+# ===================== API: ให้ Dashboard ดึงไปแสดง =====================
+@app.route('/api/data')
+def api_data():
+    # เรียงตามเครื่องที่ส่งมาล่าสุดก่อน
+    items = sorted(reports.values(), key=lambda r: r["received"], reverse=True)
+    return jsonify(items)
+
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/diagnostic', methods=['POST'])
-def api_diagnostic():
-    global is_running
-    
-    if is_running:
-        return jsonify({"error": "Diagnostic already running"}), 400
-    
-    is_running = True
-    try:
-        results = {
-            "system": get_system_info(),
-            "wifi": get_wifi_signal(),
-            "performance": get_network_performance(),
-            "processes": get_high_bandwidth_processes(),
-            "dns": get_dns_performance(),
-            "connections": get_network_connections(),
-        }
-        
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        is_running = False
 
-# ===== Diagnostic Functions (เหมือนเดิม) =====
-def get_system_info():
-    info = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "server_info": "Render.com Cloud"
+# ============================ HTML ============================
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🌐 Network Diagnostic Dashboard</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:'Segoe UI', Tahoma, sans-serif;
+    background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+    min-height:100vh; padding:20px; color:#333;
+  }
+  .container { max-width:1200px; margin:0 auto; }
+  .header { text-align:center; color:#fff; margin-bottom:24px; }
+  .header h1 { font-size:2.3em; text-shadow:2px 2px 4px rgba(0,0,0,.3); }
+  .header p { opacity:.95; margin-top:6px; }
+  .bar {
+    background:#fff; border-radius:14px; padding:16px 22px; margin-bottom:24px;
+    display:flex; align-items:center; justify-content:space-between;
+    box-shadow:0 10px 30px rgba(0,0,0,.18); flex-wrap:wrap; gap:10px;
+  }
+  .bar .status { font-weight:600; }
+  .dot { display:inline-block; width:11px; height:11px; border-radius:50%;
+         background:#4CAF50; margin-right:7px; }
+  .dashboard { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+               gap:20px; }
+  .card {
+    background:#fff; border-radius:15px; padding:22px;
+    box-shadow:0 10px 30px rgba(0,0,0,.12); border-left:5px solid #667eea;
+    transition:.25s;
+  }
+  .card:hover { transform:translateY(-4px); }
+  .card.good { border-left-color:#4CAF50; background:#f1f8f4; }
+  .card.fair { border-left-color:#ff9800; background:#fff8f0; }
+  .card.poor { border-left-color:#f44336; background:#ffebee; }
+  .card h3 { margin-bottom:14px; font-size:1.25em; }
+  .row { display:flex; justify-content:space-between; padding:9px 0;
+         border-bottom:1px solid #eee; }
+  .row:last-child { border-bottom:none; }
+  .label { color:#666; font-weight:600; }
+  .badge { padding:4px 12px; border-radius:20px; font-size:.85em; font-weight:bold; }
+  .badge.ok { background:#c8e6c9; color:#2e7d32; }
+  .badge.warn { background:#ffe0b2; color:#e65100; }
+  .badge.bad { background:#ffcdd2; color:#c62828; }
+  .empty { background:#fff; border-radius:15px; padding:40px; text-align:center;
+           color:#777; box-shadow:0 10px 30px rgba(0,0,0,.1); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🌐 Network Diagnostic Dashboard</h1>
+    <p>ข้อมูลจากเครื่อง User ที่รัน Agent อยู่</p>
+  </div>
+
+  <div class="bar">
+    <span class="status"><span class="dot"></span><span id="count">กำลังโหลด...</span></span>
+    <span style="color:#888">รีเฟรชอัตโนมัติทุก 10 วินาที</span>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+function qClass(q){
+  if(q==='Excellent'||q==='Good') return 'good';
+  if(q==='Fair') return 'fair';
+  if(q==='Poor') return 'poor';
+  return '';
+}
+function qBadge(q){
+  if(q==='Excellent'||q==='Good') return 'ok';
+  if(q==='Fair') return 'warn';
+  if(q==='Poor') return 'bad';
+  return 'warn';
+}
+
+async function load(){
+  try{
+    const res = await fetch('/api/data');
+    const data = await res.json();
+    const count = document.getElementById('count');
+    const box = document.getElementById('results');
+
+    if(!data.length){
+      count.textContent = 'ยังไม่มีเครื่องส่งข้อมูลเข้ามา';
+      box.innerHTML = '<div class="empty">⏳ รอ Agent ส่งข้อมูล...<br><br>'
+        + 'เปิด run-agent.bat บนเครื่องที่ต้องการตรวจ แล้วรอสักครู่</div>';
+      return;
     }
-    return info
 
-def get_wifi_signal():
-    wifi = {"status": "unknown"}
-    try:
-        result = subprocess.run(
-            ["netsh", "wlan", "show", "interfaces"] if os.name == 'nt' else ["iwconfig"],
-            capture_output=True, text=True, timeout=5
-        )
-        
-        for line in result.stdout.split('\n'):
-            if 'SSID' in line or 'ssid' in line:
-                if ':' in line:
-                    wifi['ssid'] = line.split(':', 1)[1].strip()
-            if 'Signal' in line or 'signal' in line:
-                match = re.search(r'(\d+)%', line)
-                if match:
-                    signal = int(match.group(1))
-                    wifi['signal_strength'] = signal
-                    wifi['signal_quality'] = get_signal_quality(signal)
-    except:
-        pass
-    
-    return wifi
+    count.textContent = data.length + ' เครื่องกำลังรายงาน';
+    let html = '<div class="dashboard">';
+    for(const d of data){
+      const sig = (d.signal!=null) ? d.signal+'%' : 'ไม่มีสัญญาณ WiFi';
+      const ping = (d.ping_avg!=null) ? d.ping_avg+' ms' : '-';
+      const pingOk = (d.ping_avg!=null && d.ping_avg<100);
+      html += `
+        <div class="card ${qClass(d.signal_quality)}">
+          <h3>💻 ${d.computer}</h3>
+          <div class="row"><span class="label">WiFi (SSID):</span>
+            <span>${d.ssid || '-'}</span></div>
+          <div class="row"><span class="label">สัญญาณ:</span>
+            <span>${sig}</span></div>
+          <div class="row"><span class="label">คุณภาพ:</span>
+            <span class="badge ${qBadge(d.signal_quality)}">${d.signal_quality}</span></div>
+          <div class="row"><span class="label">Ping (8.8.8.8):</span>
+            <span><span class="badge ${pingOk?'ok':'warn'}">${ping}</span></span></div>
+          <div class="row"><span class="label">เวลาที่วัด:</span>
+            <span>${d.timestamp || '-'}</span></div>
+          <div class="row"><span class="label">รับเข้าระบบ:</span>
+            <span>${d.received}</span></div>
+        </div>`;
+    }
+    html += '</div>';
+    box.innerHTML = html;
+  }catch(e){
+    document.getElementById('count').textContent = 'เชื่อมต่อ Dashboard ไม่ได้';
+  }
+}
 
-def get_network_performance():
-    perf = {}
-    try:
-        result = subprocess.run(
-            ["ping", "-n", "4", "8.8.8.8"] if os.name == 'nt' else ["ping", "-c", "4", "8.8.8.8"],
-            capture_output=True, text=True, timeout=10
-        )
-        
-        if result.returncode == 0:
-            lines = result.stdout.split('\n')
-            for line in lines:
-                if 'min' in line or 'avg' in line:
-                    match = re.search(r'(?:min|avg)[/=\s]+(\d+\.?\d*)', line, re.IGNORECASE)
-                    if match:
-                        perf['ping_avg'] = float(match.group(1))
-            
-            if perf.get('ping_avg'):
-                perf['ping_status'] = "Normal ✅" if perf['ping_avg'] < 100 else "High ⚠️"
-    except:
-        pass
-    
-    return perf
-
-def get_high_bandwidth_processes():
-    processes = {"bandwidth_consuming_apps": []}
-    try:
-        result = subprocess.run(
-            ["tasklist"] if os.name == 'nt' else ["ps", "aux"],
-            capture_output=True, text=True, timeout=5
-        )
-        
-        bandwidth_apps = ["motion", "ffmpeg", "vlc", "python", "java", "chrome"]
-        for app in bandwidth_apps:
-            if app.lower() in result.stdout.lower():
-                processes["bandwidth_consuming_apps"].append(app)
-    except:
-        pass
-    
-    return processes
-
-def get_dns_performance():
-    dns = {}
-    try:
-        start = time.time()
-        socket.gethostbyname("google.com")
-        dns['google_resolution_ms'] = (time.time() - start) * 1000
-        dns['dns_status'] = "Normal ✅" if dns['google_resolution_ms'] < 500 else "Slow ⚠️"
-    except:
-        dns['error'] = "DNS resolution failed"
-    
-    return dns
-
-def get_network_connections():
-    connections = {"established_count": 0, "listening_count": 0}
-    try:
-        result = subprocess.run(
-            ["netstat", "-an"],
-            capture_output=True, text=True, timeout=5
-        )
-        connections['established_count'] = len([l for l in result.stdout.split('\n') if 'ESTABLISHED' in l])
-        connections['listening_count'] = len([l for l in result.stdout.split('\n') if 'LISTENING' in l])
-    except:
-        pass
-    
-    return connections
-
-def get_signal_quality(signal_strength):
-    if signal_strength >= 80:
-        return "Excellent"
-    elif signal_strength >= 60:
-        return "Good"
-    elif signal_strength >= 40:
-        return "Fair"
-    else:
-        return "Poor"
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>
+"""
 
 
 if __name__ == "__main__":
