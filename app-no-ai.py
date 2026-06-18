@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Network Diagnostic Web Dashboard - Render.com Version
-สามารถ deploy ไป Render.com ได้ทันที
+Network Diagnostic Web Dashboard - NO AI VERSION
+เหมือนเดิมแต่ไม่ต้องใช้ Anthropic API
+ประหยัด cost และเร็วขึ้น!
 """
 
 from flask import Flask, render_template_string, jsonify
@@ -13,19 +14,13 @@ import time
 from datetime import datetime
 import os
 
-try:
-    import anthropic
-except ImportError:
-    print("❌ Missing anthropic library")
-    exit(1)
-
 app = Flask(__name__)
 
 # Store diagnostic results
 diagnostic_results = {}
 is_running = False
 
-# ===== HTML Template =====
+# ===== HTML Template (ไม่มี AI section) =====
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="th">
@@ -222,48 +217,6 @@ HTML_TEMPLATE = """
             color: #c62828;
         }
         
-        .ai-analysis {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            border-left: 5px solid #764ba2;
-            animation: slideUp 0.5s ease-out;
-        }
-        
-        .ai-analysis h2 {
-            color: #764ba2;
-            margin-bottom: 20px;
-            font-size: 1.8em;
-            display: flex;
-            align-items: center;
-        }
-        
-        .ai-analysis h2::before {
-            content: "🤖";
-            margin-right: 10px;
-            font-size: 1.5em;
-        }
-        
-        .ai-content {
-            color: #333;
-            line-height: 1.8;
-            font-size: 1.05em;
-        }
-        
-        .ai-content p {
-            margin-bottom: 15px;
-        }
-        
-        .ai-content ul, .ai-content ol {
-            margin-left: 20px;
-            margin-bottom: 15px;
-        }
-        
-        .ai-content li {
-            margin: 8px 0;
-        }
-        
         .loading {
             text-align: center;
             padding: 40px;
@@ -312,6 +265,25 @@ HTML_TEMPLATE = """
                 transform: translateY(0);
             }
         }
+
+        .info-box {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-left: 5px solid #2196F3;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .info-box h3 {
+            color: #2196F3;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #666;
+            line-height: 1.6;
+        }
         
         @media (max-width: 768px) {
             .dashboard {
@@ -328,7 +300,7 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="header">
             <h1>🌐 Network Diagnostic Dashboard</h1>
-            <p>ตรวจสอบสภาพ WiFi และเครือข่ายด้วย AI</p>
+            <p>ตรวจสอบสภาพ WiFi และเครือข่าย</p>
         </div>
         
         <div class="control-panel">
@@ -344,7 +316,7 @@ HTML_TEMPLATE = """
         <div class="loading" id="loading">
             <div class="spinner"></div>
             <div class="loading-text">🔍 กำลังตรวจสอบเครือข่าย...</div>
-            <div class="loading-text" style="font-size: 0.9em; margin-top: 10px;">อาจใช้เวลาประมาณ 30-60 วินาที</div>
+            <div class="loading-text" style="font-size: 0.9em; margin-top: 10px;">อาจใช้เวลาประมาณ 10-30 วินาที</div>
         </div>
         
         <div id="results"></div>
@@ -519,18 +491,23 @@ HTML_TEMPLATE = """
             }
             
             html += `</div>`;
-            
-            // AI Analysis
-            if (data.ai_analysis) {
-                html += `
-                    <div class="ai-analysis">
-                        <h2>AI Analysis & Recommendations</h2>
-                        <div class="ai-content">
-                            ${data.ai_analysis.replace(/\n/g, '<br/>')}
-                        </div>
-                    </div>
-                `;
-            }
+
+            // Information Box
+            html += `
+                <div class="info-box">
+                    <h3>💡 Manual Analysis Required</h3>
+                    <p>
+                        AI analysis is currently disabled to save on API costs. 
+                        Review the data above and check the following:
+                    </p>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><strong>WiFi Signal:</strong> If below 40%, consider moving closer to router or upgrading equipment</li>
+                        <li><strong>Ping Time:</strong> If above 100ms, connection is slow. Check internet provider or network congestion</li>
+                        <li><strong>Bandwidth Apps:</strong> If CCTV/ffmpeg detected, reduce resolution or frame rate</li>
+                        <li><strong>DNS:</strong> If above 500ms, try changing DNS servers (8.8.8.8 or 1.1.1.1)</li>
+                    </ul>
+                </div>
+            `;
             
             document.getElementById('results').innerHTML = html;
         }
@@ -569,19 +546,13 @@ def api_diagnostic():
             "connections": get_network_connections(),
         }
         
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if api_key:
-            results["ai_analysis"] = analyze_with_ai(results, api_key)
-        else:
-            results["ai_analysis"] = "⚠️ API Key not configured. Set ANTHROPIC_API_KEY in Render environment."
-        
         return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         is_running = False
 
-# ===== Diagnostic Functions =====
+# ===== Diagnostic Functions (เหมือนเดิม) =====
 def get_system_info():
     info = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -687,37 +658,6 @@ def get_signal_quality(signal_strength):
         return "Fair"
     else:
         return "Poor"
-
-def analyze_with_ai(results, api_key):
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        
-        data_json = json.dumps(results, ensure_ascii=False, indent=2)
-        
-        prompt = f"""
-คุณเป็น Network Diagnostic Expert ช่วยวิเคราะห์ network diagnostics data นี้
-
-📊 ข้อมูล Diagnostics:
-{data_json}
-
-กรุณา:
-1. ✅ ระบุปัญหาหลัก (Bottleneck) ที่สุด
-2. 🎯 บอกสาเหตุที่น่าจะเป็น
-3. 💡 แนะนำการแก้ไข (ปฐมฐาน/ระดับกลาง/ต้อง IT support)
-4. 🔧 อะไรควรตรวจสอบต่อไป
-
-ตอบเป็นภาษาไทยชัดเจน ใช้ emoji
-"""
-        
-        message = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        return message.content[0].text
-    except Exception as e:
-        return f"❌ AI Analysis error: {str(e)}"
 
 
 if __name__ == "__main__":
